@@ -8,7 +8,7 @@ in a strip at the bottom-left of the game's hero image (Desktop and Big Picture)
 | **Reviews** | Steam's all-language review summary (`IStoreBrowseService/GetItems`, `summary_filtered`), fetched in batches |
 | **Recent** | The store page's "Recent Reviews" row (last 30 days, off-topic periods excluded). Steam has no API for it. |
 | **SteamDB** | SteamDB's formula over all reviews, all purchase types, off-topic included (`appreviews`) |
-| **Metacritic** | PC Metascore from Metacritic, matched by the game's exact Steam name; else `metacritic_score` from Steam's local app overview |
+| **Metacritic** | PC Metascore from Metacritic, for the game Steam's own Metacritic link points to (else the PC game with exactly the Steam name); else `metacritic_score` from Steam's local app overview |
 | **MC User** | PC user score from Metacritic, matched the same way |
 
 Scores are coloured like Steam's review colours. Hover for details, click to open the source:
@@ -32,8 +32,9 @@ skipped.
   after 30 days. Lua handles one call at a time, so opening a page waits for at most one prefetch
   request.
 - `frontend/scores/` (TypeScript) parses the raw bodies and builds the cells. All parsing lives
-  here so it can be unit tested, except picking the Metacritic match: the search result decides
-  which game's scores to fetch next, so `backend/sources.lua` does it. Metacritic has no public
+  here so it can be unit tested, except picking the Metacritic game, since it decides what to
+  fetch next: `backend/sources.lua` takes the slug from the Metacritic link in Steam's
+  `appdetails` (matched by app id), and only searches Metacritic by name when Steam has none. Metacritic has no public
   API; this uses the undocumented backend its website calls, which can change without notice.
 - `frontend/injection/` detects library game pages and injects the strip.
 

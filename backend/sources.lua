@@ -3,8 +3,9 @@
 
     Kept deliberately thin: response bodies are passed through as strings and all
     parsing happens in frontend/scores (unit tested with bun). The exception is
-    Metacritic: its scores need the game's slug from a search first, so the match
-    is picked here. Steam's local Metacritic score stays the frontend's fallback.
+    Metacritic: its scores need the game's slug first (from Steam's own Metacritic
+    link, else a name search), so the slug is picked here. Steam's local Metacritic
+    score stays the frontend's fallback.
     scripts/capture-fixtures.mjs makes the same requests to refresh test fixtures.
 
     Each fetch returns: value (or nil), error string, HTTP status (429 = rate limited).
@@ -50,6 +51,19 @@ end
 
 function M.storepage_url(app_id)
     return "https://store.steampowered.com/app/" .. string.format("%d", app_id) .. "/?l=english&cc=us"
+end
+
+function M.appdetails_url(app_id)
+    return "https://store.steampowered.com/api/appdetails?appids=" .. string.format("%d", app_id)
+        .. "&filters=metacritic"
+end
+
+-- Steam links the old URL format, https://www.metacritic.com/game/pc/<slug>?ftag=...
+function M.slug_from_metacritic_url(url)
+    if type(url) ~= "string" then
+        return nil
+    end
+    return url:match("^https?://www%.metacritic%.com/game/[^/]+/([^/?#]+)")
 end
 
 function M.metacritic_search_url(name)
@@ -176,8 +190,24 @@ local function fetch_metacritic_stats(kind, slug)
     return decoded.data and decoded.data.item or false, nil, status
 end
 
--- { slug, critic, user } as JSON, or false when Metacritic has no PC game by this name.
-function M.fetch_metacritic(_, name)
+-- Slug from the Metacritic link Steam keeps for the app, or false when it has none.
+-- Matched by app id, so it can't pick a same-named game.
+local function steam_metacritic_slug(app_id)
+    local body, err, status = get(M.appdetails_url(app_id))
+    if not body then
+        return nil, err, status
+    end
+    local ok, decoded = pcall(json.decode, body)
+    if not ok or type(decoded) ~= "table" then
+        return nil, "invalid appdetails response", status
+    end
+    local app = decoded[tostring(app_id)]
+    local metacritic = app and type(app.data) == "table" and app.data.metacritic
+    return M.slug_from_metacritic_url(metacritic and metacritic.url) or false, nil, status
+end
+
+-- Slug of the PC game with exactly this name, or false.
+local function search_metacritic_slug(name)
     if type(name) ~= "string" or name == "" then
         return false, nil, 0
     end
@@ -192,9 +222,17 @@ function M.fetch_metacritic(_, name)
     if not ok or type(decoded) ~= "table" then
         return nil, "invalid Metacritic search response", status
     end
-    local slug = M.pick_metacritic_slug(decoded.data and decoded.data.items, name)
+    return M.pick_metacritic_slug(decoded.data and decoded.data.items, name) or false, nil, status
+end
+
+-- { slug, critic, user } as JSON, or false when Metacritic has no PC game for the app.
+function M.fetch_metacritic(app_id, name)
+    local slug, err, status = steam_metacritic_slug(app_id)
+    if slug == false then
+        slug, err, status = search_metacritic_slug(name)
+    end
     if not slug then
-        return false, nil, status
+        return slug, err, status
     end
     local result = { slug = slug }
     for _, kind in ipairs({ "critic", "user" }) do
