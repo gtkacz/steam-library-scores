@@ -2,8 +2,9 @@
     Fetches the raw Steam responses the frontend parses.
 
     Kept deliberately thin: response bodies are passed through as strings and all
-    parsing happens in frontend/scores (unit tested with bun). Metacritic comes from
-    Steam's local app overview in the frontend, so it isn't fetched here.
+    parsing happens in frontend/scores (unit tested with bun). The exception is
+    Metacritic: its scores need the game's slug from a search first, so the match
+    is picked here. Steam's local Metacritic score stays the frontend's fallback.
     scripts/capture-fixtures.mjs makes the same requests to refresh test fixtures.
 
     Each fetch returns: value (or nil), error string, HTTP status (429 = rate limited).
@@ -21,6 +22,7 @@ M.STORE_COOKIE = "birthtime=0; wants_mature_content=1; lastagecheckage=1-0-1990"
 M.ROW_MARKER = "user_reviews_summary_row"
 M.ROW_MAX_CHARS = 3000
 M.BATCH_SIZE = 50
+M.METACRITIC_SEARCH_LIMIT = 10
 
 -- Exposed so it can be swapped in tests.
 M._http = http
@@ -48,6 +50,38 @@ end
 
 function M.storepage_url(app_id)
     return "https://store.steampowered.com/app/" .. string.format("%d", app_id) .. "/?l=english&cc=us"
+end
+
+function M.metacritic_search_url(name)
+    return "https://backend.metacritic.com/finder/metacritic/search/" .. url_encode(name)
+        .. "/web?offset=0&limit=" .. M.METACRITIC_SEARCH_LIMIT .. "&mcoTypeId=13"
+end
+
+-- kind is "critic" or "user". Without /platform/pc the scores are the lead platform's (often PS5).
+function M.metacritic_stats_url(kind, slug)
+    return "https://backend.metacritic.com/reviews/metacritic/" .. kind .. "/games/" .. url_encode(slug)
+        .. "/platform/pc/stats/web"
+end
+
+-- Steam names carry ™, ® and curly quotes that Metacritic titles don't.
+local function normalize_title(s)
+    return (s:lower():gsub("[^%w]", ""))
+end
+
+-- Slug of the first search result with the same title that is on PC, or nil.
+-- Exact titles only: a near match would show another game's (or a DLC's) score.
+function M.pick_metacritic_slug(items, name)
+    local wanted = normalize_title(name)
+    for _, item in ipairs(items or {}) do
+        if type(item.title) == "string" and normalize_title(item.title) == wanted then
+            for _, platform in ipairs(item.platforms or {}) do
+                if platform.name == "PC" then
+                    return item.slug
+                end
+            end
+        end
+    end
+    return nil
 end
 
 -- Cuts the first review summary row out of a store page. When the game has
@@ -123,6 +157,54 @@ function M.fetch_recent_row(app_id)
         return nil, err, status
     end
     return M.extract_first_review_row(page) or false, nil, status
+end
+
+-- The PC stats item ({ score, reviewCount, sentiment, url, ... }), or false when
+-- Metacritic has none (404).
+local function fetch_metacritic_stats(kind, slug)
+    local body, err, status = get(M.metacritic_stats_url(kind, slug))
+    if status == 404 then
+        return false, nil, status
+    end
+    if not body then
+        return nil, err, status
+    end
+    local ok, decoded = pcall(json.decode, body)
+    if not ok or type(decoded) ~= "table" then
+        return nil, "invalid Metacritic " .. kind .. " stats", status
+    end
+    return decoded.data and decoded.data.item or false, nil, status
+end
+
+-- { slug, critic, user } as JSON, or false when Metacritic has no PC game by this name.
+function M.fetch_metacritic(_, name)
+    if type(name) ~= "string" or name == "" then
+        return false, nil, 0
+    end
+    local body, err, status = get(M.metacritic_search_url(name))
+    if status == 404 then
+        return false, nil, status
+    end
+    if not body then
+        return nil, err, status
+    end
+    local ok, decoded = pcall(json.decode, body)
+    if not ok or type(decoded) ~= "table" then
+        return nil, "invalid Metacritic search response", status
+    end
+    local slug = M.pick_metacritic_slug(decoded.data and decoded.data.items, name)
+    if not slug then
+        return false, nil, status
+    end
+    local result = { slug = slug }
+    for _, kind in ipairs({ "critic", "user" }) do
+        local item, stats_err, stats_status = fetch_metacritic_stats(kind, slug)
+        if item == nil then
+            return nil, stats_err, stats_status
+        end
+        result[kind] = item
+    end
+    return json.encode(result), nil, status
 end
 
 return M
