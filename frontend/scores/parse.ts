@@ -42,7 +42,8 @@ export function localMetacritic(score: number | undefined, name: string | undefi
 
 // The PC stats item the backend keeps from Metacritic's critic or user stats.
 function metacriticStats(item: any): MetacriticScore | null {
-  if (typeof item?.score !== 'number') return null;
+  // A game nobody has rated yet comes back as score 0 from 0 reviews, not as null.
+  if (typeof item?.score !== 'number' || !(item.reviewCount > 0)) return null;
   return {
     score: item.score,
     url: typeof item.url === 'string' ? `https://www.metacritic.com${item.url}` : null,

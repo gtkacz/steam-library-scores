@@ -119,6 +119,12 @@ describe('parseMetacritic', () => {
     expect(parseMetacritic(body)).toEqual({ critic: null, user: null });
   });
 
+  it('treats a score with no reviews as no score', () => {
+    // Star Birds: Metacritic reports a user score of 0 from 0 ratings rather than null.
+    const user = { score: 0, reviewCount: 0, sentiment: null, url: '/game/star-birds/user-reviews/?platform=pc' };
+    expect(parseMetacritic(JSON.stringify({ slug: 'star-birds', critic: false, user })).user).toBeNull();
+  });
+
   it('returns nulls when there is no match, no fetch yet or a bad body', () => {
     const none = { critic: null, user: null };
     expect(parseMetacritic(false)).toEqual(none);
