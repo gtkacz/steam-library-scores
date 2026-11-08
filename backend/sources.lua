@@ -125,7 +125,7 @@ local function get(url, headers)
         return nil, "request failed: " .. tostring(err), 0
     end
     if response.status ~= 200 then
-        return nil, "HTTP " .. tostring(response.status), response.status
+        return nil, "HTTP " .. tostring(response.status), response.status, response.body
     end
     return response.body, nil, 200
 end
@@ -173,12 +173,29 @@ function M.fetch_recent_row(app_id)
     return M.extract_first_review_row(page) or false, nil, status
 end
 
+-- Metacritic answers a renamed slug with a 301 that has no Location header; the new
+-- slug is only in the body: errors[1].context.availableOn[1].slug = "<slug>/pc".
+function M.moved_metacritic_slug(body)
+    local ok, decoded = pcall(json.decode, body or "")
+    if not ok or type(decoded) ~= "table" then
+        return nil
+    end
+    local first_error = type(decoded.errors) == "table" and decoded.errors[1]
+    local context = type(first_error) == "table" and first_error.context
+    local available = type(context) == "table" and type(context.availableOn) == "table" and context.availableOn[1]
+    local slug = type(available) == "table" and available.slug
+    return type(slug) == "string" and slug:match("^[^/]+") or nil
+end
+
 -- The PC stats item ({ score, reviewCount, sentiment, url, ... }), or false when
--- Metacritic has none (404).
+-- Metacritic has none (404). On a 301, the 4th value is the slug the game moved to.
 local function fetch_metacritic_stats(kind, slug)
-    local body, err, status = get(M.metacritic_stats_url(kind, slug))
+    local body, err, status, error_body = get(M.metacritic_stats_url(kind, slug))
     if status == 404 then
         return false, nil, status
+    end
+    if status == 301 then
+        return nil, err, status, M.moved_metacritic_slug(error_body)
     end
     if not body then
         return nil, err, status
@@ -236,7 +253,12 @@ function M.fetch_metacritic(app_id, name)
     end
     local result = { slug = slug }
     for _, kind in ipairs({ "critic", "user" }) do
-        local item, stats_err, stats_status = fetch_metacritic_stats(kind, slug)
+        local item, stats_err, stats_status, moved = fetch_metacritic_stats(kind, result.slug)
+        -- Steam's links can carry slugs Metacritic has since renamed. Follow once, not in a loop.
+        if moved then
+            result.slug = moved
+            item, stats_err, stats_status = fetch_metacritic_stats(kind, moved)
+        end
         if item == nil then
             return nil, stats_err, stats_status
         end
